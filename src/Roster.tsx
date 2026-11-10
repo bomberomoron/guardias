@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api } from './lib/api'
-import type { Mine, Shift, ShiftType } from './lib/types'
+import type { Funcion, Mine, Shift, ShiftType } from './lib/types'
 import {
   dayNumber, key, longDate, mmss, monthDays, monthName, shiftName, weekday, weekdayIndex,
 } from './lib/dates'
@@ -22,6 +22,7 @@ export default function Roster({ email, links }: { email: string; links: { label
   const [now, setNow] = useState(Date.now())
   const [mail, setMail] = useState<Mail>('enviando')
   const [loadError, setLoadError] = useState('')
+  const [ready, setReady] = useState(false)
 
   const say = (text: string, kind: 'error' | 'info' = 'error') => setToast({ text, kind })
 
@@ -47,6 +48,7 @@ export default function Roster({ email, links }: { email: string; links: { label
         if (!alive) return
         setMonth(tm)
         await reload(tm)
+        if (alive) setReady(true)
       })
       .catch((e) => setLoadError((e as Error).message))
 
@@ -149,7 +151,7 @@ export default function Roster({ email, links }: { email: string; links: { label
         <button className="btn" onClick={() => location.reload()}>Volver a intentar</button>
       </main>
     )
-  if (!month) return <div className="boot" aria-busy="true" />
+  if (!month || !ready) return <div className="boot" aria-busy="true" />
 
   const mes = monthName(month)
   const days = monthDays(month)
@@ -263,20 +265,7 @@ export default function Roster({ email, links }: { email: string; links: { label
         </section>
       )}
 
-      {view === 'listo' && (
-        <section className="review done">
-          <h2>Tus guardias de {mes} están confirmadas</h2>
-          <ShiftList items={confirmed} />
-          {mail === 'enviando' && <p className="muted">Enviando el reporte a {email}…</p>}
-          {mail === 'enviado' && <p className="msg ok">Te mandamos el reporte a {email}.</p>}
-          {mail === 'error' && (
-            <div className="msg error">
-              Tus guardias quedaron guardadas, pero no se pudo enviar el mail.{' '}
-              <button className="link" onClick={sendMail}>Reintentar envío</button>
-            </div>
-          )}
-        </section>
-      )}
+      {view === 'listo' && <Resumen mes={mes} items={confirmed} email={email} mail={mail} onSendMail={sendMail} />}
 
       {toast && (
         <div className={`toast ${toast.kind}`} role="alert" onClick={() => setToast(null)}>
@@ -298,17 +287,70 @@ function Seats({ taken, mine }: { taken: number; mine: boolean }) {
   )
 }
 
-function ShiftList({ items }: { items: Shift[] }) {
+const FUNCION_NOMBRE = { encargado: 'Encargado', ayudante: 'Ayudante' } as const
+
+function ShiftList({ items }: { items: (Shift & { funcion?: Funcion | null })[] }) {
   return (
     <ul className="shift-list">
       {items.map((s) => (
         <li key={key(s.shift_date, s.shift_type)} className={s.shift_type}>
           <ShiftIcon type={s.shift_type} />
           <span className="when">{longDate(s.shift_date)}</span>
-          <span className="what">{shiftName(s.shift_type)}</span>
+          <span className="what">
+            {s.funcion && <span className={`role-badge ${s.funcion}`}>{FUNCION_NOMBRE[s.funcion]}</span>}
+            {shiftName(s.shift_type)}
+          </span>
         </li>
       ))}
     </ul>
+  )
+}
+
+/** Pantalla principal de quien ya confirmó sus guardias del mes */
+function Resumen({
+  mes, items, email, mail, onSendMail,
+}: { mes: string; items: Mine[]; email: string; mail: Mail; onSendMail: () => void }) {
+  const dias = items.filter((i) => i.shift_type === 'dia').length
+  const noches = items.length - dias
+  const enc = items.filter((i) => i.funcion === 'encargado').length
+  const ayte = items.filter((i) => i.funcion === 'ayudante').length
+  const partes = [
+    dias ? `${dias} ${dias === 1 ? 'diurna' : 'diurnas'}` : '',
+    noches ? `${noches} ${noches === 1 ? 'nocturna' : 'nocturnas'}` : '',
+  ].filter(Boolean)
+  const funciones = [
+    enc ? `encargado en ${enc === 1 ? '1 guardia' : `${enc} guardias`}` : '',
+    ayte ? `ayudante en ${ayte === 1 ? '1 guardia' : `${ayte} guardias`}` : '',
+  ].filter(Boolean)
+
+  return (
+    <section className="review done">
+      <div className="summary-head">
+        <span className="big">{items.length}</span>
+        <div>
+          <h2>{items.length === 1 ? 'guardia' : 'guardias'} en {mes}</h2>
+          <p className="muted">{partes.join(' y ')}. Están confirmadas y guardadas.</p>
+        </div>
+      </div>
+      {funciones.length > 0 && (
+        <p className="msg info">La jefatura te asignó como {funciones.join(' y ')}.</p>
+      )}
+      <ShiftList items={items} />
+      <p className="muted small">Si necesitás cambiar alguna, hablá con la jefatura.</p>
+      {mail === 'previo' && (
+        <p className="small">
+          <button className="link" onClick={onSendMail}>Reenviar el reporte a {email}</button>
+        </p>
+      )}
+      {mail === 'enviando' && <p className="muted">Enviando el reporte a {email}…</p>}
+      {mail === 'enviado' && <p className="msg ok">Te mandamos el reporte a {email}.</p>}
+      {mail === 'error' && (
+        <div className="msg error">
+          Tus guardias quedaron guardadas, pero no se pudo enviar el mail.{' '}
+          <button className="link" onClick={onSendMail}>Reintentar envío</button>
+        </div>
+      )}
+    </section>
   )
 }
 
