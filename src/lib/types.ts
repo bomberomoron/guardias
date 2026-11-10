@@ -1,10 +1,13 @@
 export type ShiftType = 'dia' | 'noche'
 
+export type Funcion = 'encargado' | 'ayudante'
+
 export interface Mine {
   shift_date: string // YYYY-MM-DD
   shift_type: ShiftType
   status: 'held' | 'confirmed'
   held_until: string | null
+  funcion?: Funcion | null
 }
 
 export interface Count {
@@ -21,7 +24,9 @@ export interface Shift {
 export interface CalEntry {
   shift_date: string
   shift_type: ShiftType
+  user_id: string
   nombre: string // "Apellido I."
+  funcion: Funcion | null
 }
 
 export type Dependencia = 'CM' | 'Dto 1' | 'Dto 2'
@@ -80,4 +85,6 @@ export interface Api {
   listUsers(): Promise<Usuario[]>
   setRole(userId: string, rol: Rol): Promise<void>
   loadCalendar(month: string): Promise<CalEntry[]>
+  /** userId null quita esa función de la guardia */
+  setFuncion(date: string, type: ShiftType, funcion: Funcion, userId: string | null): Promise<void>
 }

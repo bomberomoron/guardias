@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
-import type { Api, CalEntry, Count, MiPerfil, Mine, Rol, Shift, ShiftType, Usuario } from './types'
+import type { Api, CalEntry, Count, Funcion, MiPerfil, Mine, Rol, Shift, ShiftType, Usuario } from './types'
 import { MAX_POR_GUARDIA, MAX_POR_PERSONA, MINUTOS_RETENCION } from '../config'
 import { key, monthDays, monthEndISO, nextMonthISO } from './dates'
 
@@ -74,7 +74,7 @@ function supabaseApi(url: string, anonKey: string): Api {
     async loadMine(month) {
       const { data, error } = await sb
         .from('reservations')
-        .select('shift_date, shift_type, status, held_until')
+        .select('shift_date, shift_type, status, held_until, funcion')
         .gte('shift_date', month)
         .lt('shift_date', monthEndISO(month))
         .order('shift_date')
@@ -141,6 +141,9 @@ function supabaseApi(url: string, anonKey: string): Api {
       fail(error)
       return (data ?? []) as CalEntry[]
     },
+    async setFuncion(date, type, funcion, userId) {
+      fail((await sb.rpc('set_funcion', { p_date: date, p_type: type, p_funcion: funcion, p_user: userId })).error)
+    },
   }
 }
 
@@ -176,6 +179,8 @@ function demoApi(): Api {
   const others = new Map<string, string[]>() // guardia -> nombres
   const cupo = new Map<string, number>() // nombre -> guardias que tiene
   let mine: Mine[] = []
+  const funciones = new Map<string, Partial<Record<Funcion, string>>>() // guardia -> función -> nombre (en la demo el id es el nombre)
+  const MI_ID = 'demo-yo'
 
   let seed = 11
   const rnd = () => ((seed = (seed * 9301 + 49297) % 233280) / 233280)
@@ -193,6 +198,15 @@ function demoApi(): Api {
   for (const n of DEMO_PERSONAL) {
     const want = 3 + Math.floor(rnd() * 4)
     for (let tries = 0; (cupo.get(n) ?? 0) < want && tries < 40; tries++) addTo(slots[Math.floor(rnd() * slots.length)], n)
+  }
+
+  // En la demo, parte de las guardias ya tienen encargado (y algunas ayudante)
+  for (const k of slots) {
+    const list = others.get(k)!
+    if (list.length >= 2 && rnd() < 0.6) {
+      const i = Math.floor(rnd() * list.length)
+      funciones.set(k, { encargado: list[i], ...(rnd() < 0.5 ? { ayudante: list[(i + 1) % list.length] } : {}) })
+    }
   }
 
   const emit = (k: string) => {
@@ -217,6 +231,8 @@ function demoApi(): Api {
     } else if (list.length) {
       const n = list.splice(Math.floor(Math.random() * list.length), 1)[0]
       cupo.set(n, (cupo.get(n) ?? 1) - 1)
+      const f = funciones.get(k)
+      if (f) for (const fn of ['encargado', 'ayudante'] as Funcion[]) if (f[fn] === n) delete f[fn]
     } else return
     emit(k)
   }, 2500)
@@ -290,7 +306,11 @@ function demoApi(): Api {
     },
     async loadMine() {
       expire()
-      return mine.map((m) => ({ ...m }))
+      return mine.map((m) => {
+        const f = funciones.get(key(m.shift_date, m.shift_type)) ?? {}
+        const funcion = f.encargado === MI_ID ? 'encargado' : f.ayudante === MI_ID ? 'ayudante' : null
+        return { ...m, funcion }
+      })
     },
     subscribeCounts(cb) {
       countSubs.add(cb)
@@ -365,11 +385,34 @@ function demoApi(): Api {
       const out: CalEntry[] = []
       for (const k of slots) {
         const [shift_date, shift_type] = k.split('|') as [string, ShiftType]
-        const names = [...others.get(k)!]
-        if (mine.some((m) => m.status === 'confirmed' && key(m.shift_date, m.shift_type) === k)) names.push(miNombre)
-        names.sort((a, b) => a.localeCompare(b, 'es')).forEach((nombre) => out.push({ shift_date, shift_type, nombre }))
+        const f = funciones.get(k) ?? {}
+        const people = others.get(k)!.map((n) => ({ id: n, nombre: n }))
+        if (mine.some((m) => m.status === 'confirmed' && key(m.shift_date, m.shift_type) === k)) people.push({ id: MI_ID, nombre: miNombre })
+        people
+          .sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'))
+          .forEach((p) =>
+            out.push({
+              shift_date, shift_type, user_id: p.id, nombre: p.nombre,
+              funcion: f.encargado === p.id ? 'encargado' : f.ayudante === p.id ? 'ayudante' : null,
+            }),
+          )
       }
       return out
+    },
+    async setFuncion(date, type, funcion, userId) {
+      await wait(200)
+      const k = key(date, type)
+      const anotado = userId === MI_ID
+        ? mine.some((m) => m.status === 'confirmed' && key(m.shift_date, m.shift_type) === k)
+        : !!userId && others.get(k)!.includes(userId)
+      if (userId && !anotado) throw new Error('Esa persona no tiene esta guardia confirmada')
+      const f = { ...(funciones.get(k) ?? {}) }
+      delete f[funcion]
+      if (userId) {
+        for (const fn of ['encargado', 'ayudante'] as Funcion[]) if (f[fn] === userId) delete f[fn]
+        f[funcion] = userId
+      }
+      funciones.set(k, f)
     },
   }
 }
